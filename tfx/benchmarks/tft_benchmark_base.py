@@ -72,7 +72,6 @@ class _AnalyzeAndTransformDataset(beam.PTransform):
                tfxio,
                preprocessing_fn,
                transform_input_dataset_metadata,
-               max_num_examples=None,
                generate_dataset=False):
     """Constructor.
 
@@ -81,7 +80,6 @@ class _AnalyzeAndTransformDataset(beam.PTransform):
       tfxio: A `tfx_bsl.TFXIO` instance.
       preprocessing_fn: preprocessing_fn.
       transform_input_dataset_metadata: dataset_metadata.DatasetMetadata.
-      max_num_examples: Max number of examples to read from the dataset.
       generate_dataset: If True, generates the raw dataset and appropriate
         intermediate outputs (just the TFT SavedModel for now) necessary for
         other benchmarks.
@@ -90,7 +88,6 @@ class _AnalyzeAndTransformDataset(beam.PTransform):
     self._tfxio = tfxio
     self._preprocessing_fn = preprocessing_fn
     self._transform_input_dataset_metadata = transform_input_dataset_metadata
-    self._max_num_examples = max_num_examples
     self._generate_dataset = generate_dataset
 
   def expand(self, pipeline):
@@ -101,8 +98,7 @@ class _AnalyzeAndTransformDataset(beam.PTransform):
       raw_data = (
           pipeline
           | "ReadDataset" >> beam.Create(
-              self._dataset.read_raw_dataset(
-                  deserialize=False, limit=self._max_num_examples))
+              self._dataset.read_raw_dataset(deserialize=False))
           | "Decode" >> self._tfxio.BeamSource())
       transform_fn, output_metadata = (
           (raw_data, self._tfxio.TensorAdapterConfig())
@@ -156,7 +152,7 @@ def _get_common_variables(dataset):
       tfxio=tfxio)
 
 
-def regenerate_intermediates_for_dataset(dataset, max_num_examples=None):
+def regenerate_intermediates_for_dataset(dataset):
   """Regenerate intermediate outputs required for the benchmark."""
 
   common_variables = _get_common_variables(dataset)
@@ -168,17 +164,15 @@ def regenerate_intermediates_for_dataset(dataset, max_num_examples=None):
         common_variables.tfxio,
         common_variables.preprocessing_fn,
         common_variables.transform_input_dataset_metadata,
-        max_num_examples=max_num_examples,
         generate_dataset=True)
   logging.info("Intermediate outputs regenerated.")
 
 
-def _get_batched_records(dataset, max_num_examples=None):
+def _get_batched_records(dataset):
   """Returns a (batch_size, iterator for batched records) tuple for the dataset.
 
   Args:
     dataset: BenchmarkDataset object.
-    max_num_examples: Maximum number of examples to read from the dataset.
 
   Returns:
     Tuple of (batch_size, iterator for batched records), where records are
@@ -190,8 +184,7 @@ def _get_batched_records(dataset, max_num_examples=None):
       common_variables.transform_input_dataset_metadata.schema
       .SerializeToString())
   serialized_records = benchmark_utils.batched_iterator(
-      dataset.read_raw_dataset(deserialize=False, limit=max_num_examples),
-      batch_size)
+      dataset.read_raw_dataset(deserialize=False), batch_size)
   records = [converter.DecodeBatch(x) for x in serialized_records]
   return batch_size, records
 
@@ -226,11 +219,9 @@ class TFTBenchmarkBase(benchmark_base.BenchmarkBase):
 
     pipeline = self._create_beam_pipeline()
     _ = pipeline | _AnalyzeAndTransformDataset(
-        self._dataset,
-        common_variables.tfxio,
+        self._dataset, common_variables.tfxio,
         common_variables.preprocessing_fn,
-        common_variables.transform_input_dataset_metadata,
-        max_num_examples=self._max_num_examples())
+        common_variables.transform_input_dataset_metadata)
     start = time.time()
     result = pipeline.run()
     result.wait_until_finish()
@@ -240,10 +231,7 @@ class TFTBenchmarkBase(benchmark_base.BenchmarkBase):
     self.report_benchmark(
         iters=1,
         wall_time=delta,
-        extras={
-            "num_examples":
-                self._dataset.num_examples(limit=self._max_num_examples())
-        })
+        extras={"num_examples": self._dataset.num_examples()})
 
   def benchmarkRunMetaGraphDoFnManualActuation(self):
     """Benchmark RunMetaGraphDoFn "manually".
@@ -252,8 +240,7 @@ class TFTBenchmarkBase(benchmark_base.BenchmarkBase):
     wall time taken.
     """
     common_variables = _get_common_variables(self._dataset)
-    batch_size, batched_records = _get_batched_records(self._dataset,
-                                                       self._max_num_examples())
+    batch_size, batched_records = _get_batched_records(self._dataset)
     fn = tft_beam_impl._RunMetaGraphDoFn(  # pylint: disable=protected-access
         tf_config=None,
         shared_graph_state_handle=shared.Shared(),
@@ -276,10 +263,8 @@ class TFTBenchmarkBase(benchmark_base.BenchmarkBase):
         iters=1,
         wall_time=delta,
         extras={
-            "batch_size":
-                batch_size,
-            "num_examples":
-                self._dataset.num_examples(limit=self._max_num_examples())
+            "batch_size": batch_size,
+            "num_examples": self._dataset.num_examples()
         })
 
   # TODO(b/149997088): Add a TF2 variant of this benchmark.
@@ -314,8 +299,7 @@ class TFTBenchmarkBase(benchmark_base.BenchmarkBase):
       feed_list = [inputs[key] for key in input_tensor_keys]
       callable_get_outputs = session.make_callable(fetches, feed_list=feed_list)
 
-    batch_size, batched_records = _get_batched_records(self._dataset,
-                                                       self._max_num_examples())
+    batch_size, batched_records = _get_batched_records(self._dataset)
 
     input_tensor_adapter = tensor_adapter.TensorAdapter(
         common_variables.tfxio.TensorAdapterConfig())
@@ -335,8 +319,6 @@ class TFTBenchmarkBase(benchmark_base.BenchmarkBase):
         iters=1,
         wall_time=delta,
         extras={
-            "batch_size":
-                batch_size,
-            "num_examples":
-                self._dataset.num_examples(limit=self._max_num_examples())
+            "batch_size": batch_size,
+            "num_examples": self._dataset.num_examples()
         })
