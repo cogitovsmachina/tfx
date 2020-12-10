@@ -25,14 +25,12 @@ import re
 import shutil
 import subprocess
 import tarfile
-import tempfile
 import time
 from typing import Any, Dict, List, Text
 
 from absl import logging
 import kfp
 from kfp_server_api import rest
-import tensorflow as tf
 import tensorflow_model_analysis as tfma
 
 from tfx.components import CsvExampleGen
@@ -62,6 +60,7 @@ from tfx.types import component_spec
 from tfx.types import standard_artifacts
 from tfx.types.standard_artifacts import Model
 from tfx.utils import kube_utils
+from tfx.utils import test_case_utils
 
 
 # TODO(jiyongjung): Merge with kube_utils.PodStatus
@@ -382,7 +381,7 @@ def delete_ai_platform_model(model_name):
       check=True)
 
 
-class BaseKubeflowTest(tf.test.TestCase):
+class BaseKubeflowTest(test_case_utils.TempWorkingDirTestCase):
   """Base class that defines testing harness for pipeline on KubeflowRunner."""
 
   _POLLING_INTERVAL_IN_SECONDS = 10
@@ -467,9 +466,7 @@ class BaseKubeflowTest(tf.test.TestCase):
 
   def setUp(self):
     super(BaseKubeflowTest, self).setUp()
-    self._old_cwd = os.getcwd()
-    self._test_dir = tempfile.mkdtemp()
-    os.chdir(self._test_dir)
+    self._test_dir = self.temp_working_dir
 
     self._test_output_dir = 'gs://{}/test_output'.format(self._BUCKET_NAME)
 
@@ -490,11 +487,7 @@ class BaseKubeflowTest(tf.test.TestCase):
     self._trainer_module = os.path.join(self._MODULE_ROOT, 'trainer_module.py')
 
     self.addCleanup(self._delete_test_dir, test_id)
-
-  def tearDown(self):
-    super(BaseKubeflowTest, self).tearDown()
-    os.chdir(self._old_cwd)
-    shutil.rmtree(self._test_dir)
+    self.addCleanup(shutil.rmtree, self._test_dir)
 
   def _delete_test_dir(self, test_id: Text):
     """Deletes files for this test including the module file and data files.
